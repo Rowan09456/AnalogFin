@@ -1,0 +1,1 @@
+void fft(float *real, float *imag, int n);
