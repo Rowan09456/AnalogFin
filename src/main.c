@@ -50,8 +50,11 @@ enum adc_op {
 
 // Conversion factor for 12-bit ADC (0 to 4095) with a 3.3V reference
  const float conversion_factor = 3.3f / (1 << 12);
- const float scale_factor = 2*120.0f*sqrt(2.0f) / 3.3f; // Peak to peak voltage of 120V RMS sine wave, scaled to 0..3.3V range 
+ const float scale_factor = 100*sqrt(2.0f)/ 3.3f; // 100*sqrt(2) 
  uint16_t adc_buffer[FFT_N]; // Buffer to hold ADC samples for FFT
+ float iir_buffer[FFT_N]; // Buffer to hold ADC samples for IIR filtering
+ uint16_t iir_buffer_idx = 0; // Index for the IIR buffer
+ uint16_t iir_pwm_buffer[FFT_N]; // Buffer to hold PWM output samples for IIR filtering
 
 uint16_t adc_LastIdx = 0; // Index for the last sample in the ADC buffer
 uint16_t adc_MaxIdx = 0; // Max samples to capture
@@ -73,31 +76,43 @@ bool timer_callback(repeating_timer_t* rt) {
         square_val = 1.0f; // Ensure non-negative for PWM
     }
     else { square_val = 0.0f; }
+    
     sawtooth_val = 2.0f * (time * wave_freq - floorf(time * wave_freq + 0.5f)); // Sawtooth from -1 to 1
+    
     triangle_val = 2.0f * fabsf(sawtooth_val) - 1.0f; // Triangle from -1 to 1
-    composite_val = sine_val + 0.1f * (sinf(4.0f * M_PI * wave_freq * time) +
-        sinf(6.0f * M_PI * wave_freq * time) +
-        sinf(10.0f * M_PI * wave_freq * time) +
-        sinf(14.0f * M_PI * wave_freq * time) +
-        sinf(50.0f * M_PI * wave_freq * time) +
-        sinf(70.0f * M_PI * wave_freq * time) +
-        sinf(100.0f * M_PI * wave_freq * time));
 
-    // Scale sine wave (-1.0 to 1.0) to PWM duty cycle (0 to pwm_wrap_val)
+
+    composite_val = sine_val + 0.1f * (sinf(4.0f * M_PI * wave_freq * time) + //2nd harmonic
+        sinf(6.0f * M_PI * wave_freq * time) +  //3rd harmonic
+        sinf(10.0f * M_PI * wave_freq * time) + //5th harmonic
+        sinf(14.0f * M_PI * wave_freq * time) + //7th harmonic
+        3*sinf(18.0f * M_PI * wave_freq * time) + //9th harmonic
+        2*sinf(22.0f * M_PI * wave_freq * time) + //11th harmonic
+        3*sinf(26.0f * M_PI * wave_freq * time) + //13th harmonic
+        4*sinf(30.0f * M_PI * wave_freq * time) + //15th harmonic
+        10*sinf(34.0f * M_PI * wave_freq * time) + //17th harmonic
+        10*sinf(38.0f * M_PI * wave_freq * time)); //19th harmonic
+    
+    
     switch (this_pwm_output) {
     case PWM_SINE:
+        // Scale sine wave (-1.0 to 1.0) to PWM duty cycle (0 to pwm_wrap_val)
         pwm_output = (sine_val + 1.0f) * 0.5f; // Scale to 0..1
         break;
-    case PWM_SQUARE:
+    
+        case PWM_SQUARE:
         pwm_output = square_val; // Already 0 or 1
         break;
-    case PWM_SAWTOOTH:
+    
+        case PWM_SAWTOOTH:
         pwm_output = (sawtooth_val + 1.0f) * 0.5f; // Scale to 0..1
         break;
-    case PWM_TRIANGLE:
+    
+        case PWM_TRIANGLE:
         pwm_output = (triangle_val + 1.0f) * 0.5f; // Scale to 0..1
         break;
-    case PWM_COMPOSITE:
+    
+        case PWM_COMPOSITE:
         pwm_output = (composite_val + 1.0f) * 0.5f; // Scale to 0..1
         break;
     }
@@ -123,9 +138,11 @@ bool adc_capture(repeating_timer_t* rt)
         
         uint16_t adc_val = adc_read(); // Read ADC value 
         float adc_voltage = (float)adc_val * conversion_factor; // Convert to voltage
-        float filtered_voltage = applyfilter(adc_voltage); // Apply IIR filter
-        uint16_t iir_level = (uint16_t)((filtered_voltage / 3.3f) * iir_pwm_wrap_val); // Scale to PWM level
-        pwm_set_chan_level(iir_slice_num, iir_chan, adc_val); // Update the hardware channel level with filtered value
+        float filtered_voltage = applyfilter(adc_voltage); // Apply IIR filter 
+       
+        uint16_t iir_level = (uint16_t)( (filtered_voltage/ADC_VREF) * iir_pwm_wrap_val); // Scale to PWM level
+        pwm_set_chan_level(iir_slice_num, iir_chan, iir_level); // Update the hardware channel level with filtered value
+    
         return(true); // Keep timer running
     }
 
@@ -135,6 +152,7 @@ bool adc_capture(repeating_timer_t* rt)
     if(adc_LastIdx >= adc_MaxIdx)
     {
         adc_InProgress = false; // Capture complete
+        adc_LastIdx = 0; // Reset index for next capture
         return false; // Stop timer!
     }
     else
@@ -217,7 +235,7 @@ int main()
             case '5': this_pwm_output = PWM_COMPOSITE; printf("Generating %g Hz composite wave on pin %d\n", wave_freq, PWM_OUT_GPIO); break;
             }
             printf("Press 1 for sine, 2 for square, 3 for sawtooth, 4 for triangle, 5 for composite\n");
-            printf("Press 6 for RMS [1 cycle], 7 for FFR [1 cycle], 8 for Butterworh Filtering (output GPIO 15 - Pin 20\n");
+            printf("Press 6 for RMS [1 cycle], 7 for FFR [1 cycle], 8 for Butterworh Filtering (output GPIO 14 - Pin 19\n");
             printf("Press 0 to change frequency (enter new frequency in Hz)\n");
 
         }
@@ -229,7 +247,7 @@ int main()
             wave_freq = new_freq;
             printf("Frequency changed to %g Hz\n", wave_freq);
             printf("Press 1 for sine, 2 for square, 3 for sawtooth, 4 for triangle, 5 for composite\n");
-            printf("Press 6 for RMS [1 cycle], 7 for FFR [1 cycle], 8 for Butterworh Filtering (output GPIO 15 - Pin 20\n");
+            printf("Press 6 for RMS [1 cycle], 7 for FFR [1 cycle], 8 for Butterworh Filtering (output GPIO 14 - Pin 19\n");
             printf("Press 0 to change frequency (enter new frequency in Hz)\n");
             
 
@@ -260,7 +278,13 @@ int main()
                 printf("ADC Processing: FFT [1 cycle]\n"); 
                 adc_MaxIdx = FFT_N; // Capture max. samples for FFT processing
                 break;
-                case '8': this_adc = IIR; printf("ADC Processing: Butterworth Filtering (output GPIO 15 - Pin 20)\n"); break;
+                case '8': 
+                iir_buffer_idx = 0; // Reset the index for IIR buffer
+                this_adc = IIR; 
+               
+                printf("ADC Processing: Butterworth Filtering (output GPIO 14 - Pin 19)\n");
+
+                break;
                 case '9': this_adc = IDLE; printf("ADC Processing: IDLE\n"); break;
             }
                         
@@ -290,13 +314,14 @@ int main()
             // Perform FFT on the captured ADC samples
             for (int i = 0; i < FFT_N; i++) {
                 vReal[i] = (float)(adc_buffer[i] * conversion_factor); // Convert to voltage
+                
                 vImag[i] = 0.0f; // Imaginary part is zero for real signals
             }
             fft(vReal, vImag, FFT_N); // Call the FFT function
           
             for (int i = 0; i < FFT_N / 2; i++) 
             {
-                float magnitude = sqrt(vReal[i] * vReal[i] + vImag[i] * vImag[i]);
+                float magnitude = sqrt(vReal[i] * vReal[i] + vImag[i] * vImag[i])/FFT_N; // Normalize the magnitude
                 float bin_frequency = (float)i * ADC_SAMPLE_HZ / FFT_N;
                 if (magnitude > FFT_MIN_PEAK_V) // Only print peaks above the threshold
                 {

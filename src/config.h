@@ -18,5 +18,5 @@
 // 16384 samples @ 20 kHz = 0.82 s of signal, 1.22 Hz per bin.
 
 #define FFT_N               16384
-#define FFT_MIN_PEAK_V      2.0f  // ignore peaks smaller than 2.0
+#define FFT_MIN_PEAK_V      .01250f  // ignore peaks smaller than 12.5 mV (1/4 LSB of 12-bit ADC)
 
